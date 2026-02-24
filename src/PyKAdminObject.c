@@ -170,55 +170,203 @@ cleanup:
 }
 
 
-static PyObject *PyKAdminObject_create_principal(PyKAdminObject *self, PyObject *args, PyObject *kwds) {
-
-    kadm5_ret_t retval   = KADM5_OK;
+static PyObject *PyKAdminObject_rename_principal(PyKAdminObject *self, PyObject *args, PyObject *kwds){
+    
+    kadm5_ret_t retval = KADM5_OK;
     krb5_error_code code = 0;
-    char *princ_name = NULL;
-    char *princ_pass = NULL;
-    PyObject *db_args = NULL;
+    krb5_principal old_principal = NULL;
+    krb5_principal new_principal = NULL;
+
+    char *old_principal_name = NULL;
+    char *new_principal_name = NULL;
 
     PyObject *result = Py_True;
 
-    kadm5_principal_ent_rec entry;
-    
-    memset(&entry, 0, sizeof(entry));
-    entry.attributes = 0;
-
-    // todo set default attributes.
-    static char *kwlist[] = {"db_args", NULL};
-
-    if (!PyArg_ParseTuple(args, "s|z", &princ_name, &princ_pass))
+    if (!PyArg_ParseTuple(args, "ss", &old_principal_name, &new_principal_name))
         return NULL;
     
-    if (!PyArg_ParseTupleAndKeywords(PyTuple_New(0), kwds, "|O", kwlist, &db_args))
-        return NULL;
-
-    pykadmin_principal_append_db_args(&entry, db_args);
-
     if (self->server_handle) {
-
-        code = krb5_parse_name(self->context, princ_name, &entry.principal);
-        if (code) { 
+        code = krb5_parse_name(self->context, old_principal_name, &old_principal);
+        if (code) {
             PyKAdminError_raise_error(code, "krb5_parse_name");
             result = NULL;
             goto cleanup;
         }
 
-        retval = kadm5_create_principal(self->server_handle, &entry, (KADM5_PRINCIPAL | KADM5_TL_DATA), princ_pass); 
-        if (retval != KADM5_OK) {
-            PyKAdminError_raise_error(retval, "kadm5_create_principal");
+        code = krb5_parse_name(self->context, new_principal_name, &new_principal);
+        if (code) {
+            PyKAdminError_raise_error(code, "krb5_parse_name");
             result = NULL;
+            goto cleanup;
         }
 
+        retval = kadm5_rename_principal(self->server_handle, old_principal, new_principal);
+        if (retval != KADM5_OK) {
+            PyKAdminError_raise_error(retval, "kadmin5_rename_principal");
+            result = NULL;
+            goto cleanup;
+        }
     }
 
 cleanup:
 
-    kadm5_free_principal_ent(self->server_handle, &entry);
+    if (old_principal)
+        krb5_free_principal(self->context, old_principal);
+    if (new_principal)
+        krb5_free_principal(self->context, new_principal);
 
     Py_XINCREF(result);
     return result;
+
+}
+
+
+
+static PyObject *PyKAdminObject_create_principal(PyKAdminObject *self,
+                                PyObject *args,
+                                PyObject *kwds)
+{
+    kadm5_ret_t retval = KADM5_OK;
+    krb5_error_code code = 0;
+
+    char *princ_name = NULL;
+    char *princ_pass = NULL;
+    PyObject *cyphers = NULL;
+    PyObject *db_args = NULL;
+
+    kadm5_principal_ent_rec entry;
+    memset(&entry, 0, sizeof(entry));
+
+    static char *kwlist[] = {
+        "princ_name",
+        "password",
+        "cyphers",
+        "db_args",
+        NULL
+    };
+
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwds,
+            "s|zOO",
+            kwlist,
+            &princ_name,
+            &princ_pass,
+            &cyphers,
+            &db_args))
+        return NULL;
+
+    if (!self->server_handle) {
+        PyErr_SetString(PyExc_RuntimeError, "Server handle is NULL");
+        return NULL;
+    }
+
+    code = krb5_parse_name(self->context, princ_name, &entry.principal);
+    if (code) {
+        PyKAdminError_raise_error(code, "krb5_parse_name");
+        return NULL;
+    }
+
+    entry.attributes = 0;
+
+    if (db_args)
+        pykadmin_principal_append_db_args(&entry, db_args);
+
+    krb5_key_salt_tuple *ks_tuple = NULL;
+    int n_ks_tuple = 0;
+
+    if (cyphers && PyList_Check(cyphers)) {
+
+        Py_ssize_t list_size = PyList_Size(cyphers);
+        if (list_size <= 0) {
+            PyErr_SetString(PyExc_ValueError, "cyphers list is empty");
+            goto error;
+        }
+
+        ks_tuple = calloc(list_size, sizeof(krb5_key_salt_tuple));
+        if (!ks_tuple) {
+            PyErr_NoMemory();
+            goto error;
+        }
+
+        for (Py_ssize_t i = 0; i < list_size; i++) {
+
+            PyObject *item = PyList_GetItem(cyphers, i);
+            const char *enc_string_full = PyUnicode_AsUTF8(item);
+
+            if (!enc_string_full) {
+                PyErr_SetString(PyExc_ValueError, "Invalid enctype string");
+                goto error;
+            }
+
+            char *tmp = strdup(enc_string_full);
+            if (!tmp) {
+                PyErr_NoMemory();
+                goto error;
+            }
+
+            char *salt_part = strchr(tmp, ':');
+            if (salt_part) {
+                *salt_part = '\0';
+                salt_part++;
+            }
+
+            krb5_enctype enctype;
+            code = krb5_string_to_enctype(tmp, &enctype);
+            if (code) {
+                free(tmp);
+                PyKAdminError_raise_error(code, "krb5_string_to_enctype");
+                goto error;
+            }
+
+            ks_tuple[i].ks_enctype = enctype;
+
+            if (salt_part) {
+                krb5_int32 salttype;
+                code = krb5_string_to_salttype(salt_part, &salttype);
+                if (code) {
+                    free(tmp);
+                    PyKAdminError_raise_error(code, "krb5_string_to_salttype");
+                    goto error;
+                }
+                ks_tuple[i].ks_salttype = salttype;
+            } else {
+                ks_tuple[i].ks_salttype = KRB5_KDB_SALTTYPE_NORMAL;
+            }
+
+            free(tmp);
+        }
+
+        n_ks_tuple = (int)list_size;
+    }
+
+    retval = kadm5_create_principal_3(
+        self->server_handle,
+        &entry,
+        KADM5_PRINCIPAL,
+        n_ks_tuple,
+        ks_tuple,
+        princ_pass
+    );
+
+    if (retval != KADM5_OK) {
+        PyKAdminError_raise_error(retval, "kadm5_create_principal_3");
+        goto error;
+    }
+
+    free(ks_tuple);
+    krb5_free_principal(self->context, entry.principal);
+
+    Py_RETURN_TRUE;
+
+error:
+    if (ks_tuple)
+        free(ks_tuple);
+
+    if (entry.principal)
+        krb5_free_principal(self->context, entry.principal);
+
+    return NULL;
 }
 
 
@@ -509,7 +657,15 @@ static PyMethodDef PyKAdminObject_methods[] = {
     {"get_policy",          (PyCFunction)PyKAdminObject_get_policy,       METH_VARARGS, ""},
 
     {"principals",          (PyCFunction)PyKAdminObject_principal_iter,   (METH_VARARGS | METH_KEYWORDS), ""},
+    {"list_principals",     (PyCFunction)PyKAdminObject_principal_iter,   (METH_VARARGS | METH_KEYWORDS), ""},
+    {"listprincs",          (PyCFunction)PyKAdminObject_principal_iter,   (METH_VARARGS | METH_KEYWORDS), ""},
+    
     {"policies",            (PyCFunction)PyKAdminObject_policy_iter,      (METH_VARARGS | METH_KEYWORDS), ""},
+    {"list_policies",       (PyCFunction)PyKAdminObject_policy_iter,      (METH_VARARGS | METH_KEYWORDS), ""},
+    {"listpols",            (PyCFunction)PyKAdminObject_policy_iter,      (METH_VARARGS | METH_KEYWORDS), ""},
+
+    {"renprinc",            (PyCFunction)PyKAdminObject_rename_principal, METH_VARARGS, ""},
+    {"rename_principal",    (PyCFunction)PyKAdminObject_rename_principal, METH_VARARGS, ""},
 
     // todo implement
     {"lock",                (PyCFunction)NULL,                            METH_NOARGS, ""},
