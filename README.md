@@ -3,6 +3,8 @@ python-kadmin
 
 Python module for kerberos admin (kadm5)
 
+## Сборка
+Необходимо поставить python 3.8.2 (советую pyenv) и только на ней производить сборку. Иначе будет ошибка [при импорте библиотеки](https://github.com/rjancewicz/python-kadmin/issues/65)
 ## Initilization
 
 ### kadmin
