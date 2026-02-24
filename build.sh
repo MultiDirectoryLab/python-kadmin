@@ -1,4 +1,4 @@
-
+#!/bin/bash
 target=$1
 
 #
@@ -11,13 +11,13 @@ target=$1
 #
 
 if [ "$target" == "test" ]; then 
-    CFLAGS="-O0" python ./setup.py build --build-platlib ./test/
+    CFLAGS="-O0" python3 ./setup.py build --build-platlib ./test/
 fi
 
 if [ "$target" == "dist" ]; then 
-    python ./setup.py sdist
+    python3 ./setup.py sdist
 fi
 
 if [ "$target" == "release" ]; then
-    CFLAGS="-O3" python ./setup.py build
+    CFLAGS="-O3" python3 ./setup.py build
 fi
