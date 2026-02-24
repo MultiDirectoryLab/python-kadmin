@@ -35,4 +35,5 @@ krb5cc*
 # Vagrant Configs
 .vagrant
 Vagrantfile
-
+.venv
+python_kadmin*
