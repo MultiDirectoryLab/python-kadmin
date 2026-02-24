@@ -9,6 +9,9 @@
 
 #include <bytesobject.h>
 #include <datetime.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define TIME_NONE ((time_t) -1)
 
@@ -18,22 +21,22 @@ static PyObject *PyKAdminPrincipal_get_keys(PyKAdminPrincipalObject *self, void 
 static char kNEVER[] = "never";
 
 static const unsigned int kFLAG_MAX =
-    ( KRB5_KDB_DISALLOW_POSTDATED 
-    | KRB5_KDB_DISALLOW_FORWARDABLE 
-    | KRB5_KDB_DISALLOW_TGT_BASED 
-    | KRB5_KDB_DISALLOW_RENEWABLE 
-    | KRB5_KDB_DISALLOW_PROXIABLE 
-    | KRB5_KDB_DISALLOW_DUP_SKEY 
-    | KRB5_KDB_DISALLOW_ALL_TIX 
-    | KRB5_KDB_REQUIRES_PRE_AUTH 
-    | KRB5_KDB_REQUIRES_HW_AUTH 
-    | KRB5_KDB_REQUIRES_PWCHANGE 
-    | KRB5_KDB_DISALLOW_SVR 
-    | KRB5_KDB_PWCHANGE_SERVICE 
-    | KRB5_KDB_SUPPORT_DESMD5 
-    | KRB5_KDB_NEW_PRINC 
-    | KRB5_KDB_OK_AS_DELEGATE 
-    | KRB5_KDB_OK_TO_AUTH_AS_DELEGATE 
+    ( KRB5_KDB_DISALLOW_POSTDATED
+    | KRB5_KDB_DISALLOW_FORWARDABLE
+    | KRB5_KDB_DISALLOW_TGT_BASED
+    | KRB5_KDB_DISALLOW_RENEWABLE
+    | KRB5_KDB_DISALLOW_PROXIABLE
+    | KRB5_KDB_DISALLOW_DUP_SKEY
+    | KRB5_KDB_DISALLOW_ALL_TIX
+    | KRB5_KDB_REQUIRES_PRE_AUTH
+    | KRB5_KDB_REQUIRES_HW_AUTH
+    | KRB5_KDB_REQUIRES_PWCHANGE
+    | KRB5_KDB_DISALLOW_SVR
+    | KRB5_KDB_PWCHANGE_SERVICE
+    | KRB5_KDB_SUPPORT_DESMD5
+    | KRB5_KDB_NEW_PRINC
+    | KRB5_KDB_OK_AS_DELEGATE
+    | KRB5_KDB_OK_TO_AUTH_AS_DELEGATE
     | KRB5_KDB_NO_AUTH_DATA_REQUIRED );
 
 
@@ -82,7 +85,7 @@ static void _PyKAdminPrincipal_print_keys(PyKAdminPrincipalObject *self, FILE *f
     PyObject *salttype;
 
     ssize_t pos = 0;
-    ssize_t index = 0; 
+    ssize_t index = 0;
 
     if (keys) {
 
@@ -223,7 +226,7 @@ static PyObject *PyKAdminPrincipal_unset_attributes(PyKAdminPrincipalObject *sel
 static PyObject *PyKAdminPrincipal_commit(PyKAdminPrincipalObject *self) {
 
     PyObject *result = NULL;
-    kadm5_ret_t retval = KADM5_OK; 
+    kadm5_ret_t retval = KADM5_OK;
 
     if (self && self->mask) {
 
@@ -351,6 +354,23 @@ static PyObject *PyKAdminPrincipal_unlock(PyKAdminPrincipalObject *self) {
     self->mask |= KADM5_TL_DATA;
 
     Py_RETURN_TRUE;
+}
+
+
+static PyObject *PyKAdminPrincipal_delete(PyKAdminPrincipalObject *self) {
+
+    PyObject *result   = Py_True;
+    kadm5_ret_t retval = KADM5_OK;
+
+    retval = kadm5_delete_principal(self->kadmin->server_handle, self->entry.principal);
+    if (retval != KADM5_OK) {
+        PyKAdminError_raise_error(retval, "kadm5_delete_principal");
+        result = NULL;
+    }
+
+    PyKAdminPrincipalObject_destroy(self);
+    Py_XINCREF(result);
+    return result;
 }
 
 
@@ -644,6 +664,104 @@ static PyObject *PyKAdminPrincipal_get_keys(PyKAdminPrincipalObject *self, void 
 }
 
 
+static PyObject *PyKAdminPrincipal_kt_add(PyKAdminPrincipalObject *self, PyObject *args, PyObject *kwargs) {
+    PyObject *result   = Py_True;
+    char *keytab_str   = NULL;
+    krb5_keytab keytab = 0;
+    int code, i = 0;
+
+    int nkeys = 0;
+    krb5_keyblock *keys;
+    krb5_keytab_entry new_entry;
+    kadm5_principal_ent_rec princ_rec;
+    int n_ks_tuple = 0;
+    krb5_boolean keepold = FALSE;
+    krb5_key_salt_tuple *ks_tuple = NULL;
+
+    if (!PyArg_ParseTuple(args, "s", &keytab_str))
+        return NULL;
+
+    if (*keytab_str == NULL) {
+        PyKAdminError_raise_error(1, "empty keytab");
+        result = NULL;
+        return result;
+    }
+
+    if (strchr(keytab_str, ':') != NULL)
+        keytab_str = strdup(keytab_str);
+    else if (asprintf(&keytab_str, "WRFILE:%s", keytab_str) < 0)
+        keytab_str = NULL;
+
+    if (keytab_str == NULL) {
+        PyKAdminError_raise_error(2, "could not construct keytab filename");
+        result = NULL;
+        return result;
+    }
+
+    code = krb5_kt_resolve(self->kadmin->context, keytab_str, &keytab);
+    if (code != 0) {
+        PyKAdminError_raise_error(code, "krb5_kt_resolve: could not construct keytab");
+        result = NULL;
+        return result;
+    }
+
+    /* code = kadm5_randkey_principal(
+         self->kadmin->server_handle, self->entry.principal, &keys, &nkeys);
+    */
+    code = kadm5_randkey_principal_3(
+        self->kadmin->server_handle, self->entry.principal,
+        keepold, n_ks_tuple, ks_tuple, &keys, &nkeys);
+    if (code != 0) {
+        PyKAdminError_raise_error(code, "kadm5_randkey_principal: could not fetch keys");
+        result = NULL;
+        return result;
+    }
+
+    code = kadm5_get_principal(
+        self->kadmin->server_handle, self->entry.principal,
+        &princ_rec, KADM5_PRINCIPAL_NORMAL_MASK);
+    if (code != 0) {
+        PyKAdminError_raise_error(code, "kadm5_get_principal: could retrieve principal");
+        result = NULL;
+        return result;
+    }
+
+    for (i = 0; i < nkeys; i++) {
+        memset(&new_entry, 0, sizeof(new_entry));
+        new_entry.principal = self->entry.principal;
+        new_entry.key = keys[i];
+        new_entry.vno = princ_rec.kvno;
+
+        code = krb5_kt_add_entry(self->kadmin->context, keytab, &new_entry);
+        if (code != 0) {
+            for (i = 0; i < nkeys; i++)
+                krb5_free_keyblock_contents(self->kadmin->context, &keys[i]);
+            free(keys);
+            kadm5_free_principal_ent(self->kadmin->server_handle, &princ_rec);
+            PyKAdminError_raise_error(code, "krb5_kt_add_entry: could not add key");
+            result = NULL;
+            return result;
+        }
+
+    }
+
+    kadm5_free_principal_ent(self->kadmin->server_handle, &princ_rec);
+    for (i = 0; i < nkeys; i++)
+        krb5_free_keyblock_contents(self->kadmin->context, &keys[i]);
+    free(keys);
+
+    code = krb5_kt_close(self->kadmin->context, keytab);
+    if (code != 0) {
+        PyKAdminError_raise_error(code, "krb5_kt_close: could not close keytab");
+        result = NULL;
+        return result;
+    }
+
+    Py_XINCREF(result);
+    return result;
+}
+
+
 /*
  *  SETTERS 
  */
@@ -924,6 +1042,7 @@ static PyObject *PyKAdminPrincipal_modify(PyKAdminPrincipalObject *self, PyObjec
 
 static char kDOCSTRING_COMMIT[]          = "commit()\n\tCommit all staged changes to the kerberos database.";
 static char kDOCSTRING_CPW[]             = "change_password(str)\n\tChange the password for the given principal.";
+static char kDOCSTRING_DELETE[]          = "delete()\n\tDelete the given principal.";
 static char kDOCSTRING_RANDKEY[]         = "randkey()\n\tRandomize the key for the given principal.";
 static char kDOCSTRING_RELOAD[]          = "reload()\n\tReload the local entry from the kerberos database.";
 static char kDOCSTRING_UNLOCK[]          = "unlock()\n\tUnlock the principal.";
@@ -944,6 +1063,7 @@ static char kDOCSTRING_POLICY[]          = "getter: [str|None]\n\tsetter: [str|k
 static char kDOCSTRING_KVNO[]            = "getter: int\n\tsetter: [int]\n\tcurrent key version number.";
 static char kDOCSTRING_FAILURES[]        = "failed authentication count.";
 static char kDOCSTRING_MKVNO[]           = "master key version number.";
+static char KDOCSTRING_KT_ADD[]          = "add principal's key to keytab";
 
 static char kDOCSTRING_MODIFY[]          = "principal.modify(expire=a, pwexpire=b, maxlife=c, maxrenewlife=d, attributes=e, policy=f, kvno=g)\n\tshorthand for calling setters and commit";
 
@@ -954,14 +1074,18 @@ static PyMethodDef PyKAdminPrincipal_methods[] = {
     {"randkey",         (PyCFunction)PyKAdminPrincipal_randomize_key,    METH_NOARGS,   kDOCSTRING_RANDKEY},
     {"randomize_key",   (PyCFunction)PyKAdminPrincipal_randomize_key,    METH_NOARGS,   kDOCSTRING_RANDKEY},
 
-    {"modify",           (PyCFunction)PyKAdminPrincipal_modify,            METH_KEYWORDS, kDOCSTRING_MODIFY},
+    {"modify",           (PyCFunction)PyKAdminPrincipal_modify,            METH_VARARGS | METH_KEYWORDS, kDOCSTRING_MODIFY},
 
     {"commit",           (PyCFunction)PyKAdminPrincipal_commit,           METH_NOARGS,   kDOCSTRING_COMMIT},
     {"reload",           (PyCFunction)PyKAdminPrincipal_reload,           METH_NOARGS,   kDOCSTRING_RELOAD},
     {"unlock",           (PyCFunction)PyKAdminPrincipal_unlock,           METH_NOARGS,   kDOCSTRING_UNLOCK},
+    {"delete",           (PyCFunction)PyKAdminPrincipal_delete,           METH_NOARGS,   kDOCSTRING_DELETE},
 
     {"set_flags",        (PyCFunction)PyKAdminPrincipal_set_attributes,   METH_VARARGS,  kDOCSTRING_SET_FLAGS},
     {"unset_flags",      (PyCFunction)PyKAdminPrincipal_unset_attributes, METH_VARARGS,  kDOCSTRING_UNSET_FLAGS},
+
+    {"ktadd",            (PyCFunction)PyKAdminPrincipal_kt_add,           METH_VARARGS, KDOCSTRING_KT_ADD},
+    {"xst",              (PyCFunction)PyKAdminPrincipal_kt_add,           METH_VARARGS, KDOCSTRING_KT_ADD},
     
 
     {NULL, NULL, 0, NULL}

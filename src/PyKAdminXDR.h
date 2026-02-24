@@ -2,6 +2,7 @@
 #ifndef PYKADMINXDR_H
 #define PYKADMINXDR_H
 
+#include <time.h>
 #include <krb5.h>
 #include <kdb.h>
 #include <gssrpc/rpc.h>
