@@ -665,26 +665,42 @@ static PyObject *PyKAdminPrincipal_get_keys(PyKAdminPrincipalObject *self, void 
 
 
 static PyObject *PyKAdminPrincipal_kt_add(PyKAdminPrincipalObject *self, PyObject *args, PyObject *kwargs) {
-    PyObject *result   = Py_True;
-    char *keytab_str   = NULL;
+    char *keytab_str = NULL;
+    PyObject *result = Py_True;
+    kadm5_principal_ent_rec princ_rec;
+    
     krb5_keytab keytab = 0;
     int code, i = 0;
 
     int nkeys = 0;
     krb5_keyblock *keys;
     krb5_keytab_entry new_entry;
-    kadm5_principal_ent_rec princ_rec;
+
     int n_ks_tuple = 0;
-    krb5_boolean keepold = FALSE;
     krb5_key_salt_tuple *ks_tuple = NULL;
 
-    if (!PyArg_ParseTuple(args, "s", &keytab_str))
+    static char *kwlist[] = {"keytab", "keepold", NULL};
+    PyObject *keepold_obj = Py_False;
+    krb5_boolean keepold = FALSE;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs,
+                                     "s|O",
+                                     kwlist,
+                                     &keytab_str,
+                                     &keepold_obj))
         return NULL;
 
-    if (*keytab_str == NULL) {
+    if (!PyBool_Check(keepold_obj)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "keepold must be True or False");
+        return NULL;
+    }
+
+    keepold = (keepold_obj == Py_True) ? TRUE : FALSE;
+
+    if (keytab_str == NULL || *keytab_str == '\0') {
         PyKAdminError_raise_error(1, "empty keytab");
-        result = NULL;
-        return result;
+        return NULL;
     }
 
     if (strchr(keytab_str, ':') != NULL)
@@ -694,20 +710,16 @@ static PyObject *PyKAdminPrincipal_kt_add(PyKAdminPrincipalObject *self, PyObjec
 
     if (keytab_str == NULL) {
         PyKAdminError_raise_error(2, "could not construct keytab filename");
-        result = NULL;
-        return result;
+        return NULL;
     }
 
     code = krb5_kt_resolve(self->kadmin->context, keytab_str, &keytab);
     if (code != 0) {
-        PyKAdminError_raise_error(code, "krb5_kt_resolve: could not construct keytab");
-        result = NULL;
-        return result;
+        PyKAdminError_raise_error(code,
+            "krb5_kt_resolve: could not construct keytab");
+        return NULL;
     }
 
-    /* code = kadm5_randkey_principal(
-         self->kadmin->server_handle, self->entry.principal, &keys, &nkeys);
-    */
     code = kadm5_randkey_principal_3(
         self->kadmin->server_handle, self->entry.principal,
         keepold, n_ks_tuple, ks_tuple, &keys, &nkeys);
@@ -1084,8 +1096,8 @@ static PyMethodDef PyKAdminPrincipal_methods[] = {
     {"set_flags",        (PyCFunction)PyKAdminPrincipal_set_attributes,   METH_VARARGS,  kDOCSTRING_SET_FLAGS},
     {"unset_flags",      (PyCFunction)PyKAdminPrincipal_unset_attributes, METH_VARARGS,  kDOCSTRING_UNSET_FLAGS},
 
-    {"ktadd",            (PyCFunction)PyKAdminPrincipal_kt_add,           METH_VARARGS, KDOCSTRING_KT_ADD},
-    {"xst",              (PyCFunction)PyKAdminPrincipal_kt_add,           METH_VARARGS, KDOCSTRING_KT_ADD},
+    {"ktadd",            (PyCFunction)PyKAdminPrincipal_kt_add,           METH_VARARGS | METH_KEYWORDS, KDOCSTRING_KT_ADD},
+    {"xst",              (PyCFunction)PyKAdminPrincipal_kt_add,           METH_VARARGS | METH_KEYWORDS, KDOCSTRING_KT_ADD},
     
 
     {NULL, NULL, 0, NULL}
