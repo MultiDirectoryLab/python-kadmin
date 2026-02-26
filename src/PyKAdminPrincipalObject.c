@@ -666,111 +666,185 @@ static PyObject *PyKAdminPrincipal_get_keys(PyKAdminPrincipalObject *self, void 
 
 static PyObject *PyKAdminPrincipal_kt_add(PyKAdminPrincipalObject *self, PyObject *args, PyObject *kwargs) {
     char *keytab_str = NULL;
-    PyObject *result = Py_True;
-    kadm5_principal_ent_rec princ_rec;
-    
-    krb5_keytab keytab = 0;
-    int code, i = 0;
+    krb5_keytab keytab = NULL;
+    int code, i;
 
-    int nkeys = 0;
-    krb5_keyblock *keys;
-    krb5_keytab_entry new_entry;
+    static char *kwlist[] = {"keytab", "randkey", NULL};
 
-    int n_ks_tuple = 0;
-    krb5_key_salt_tuple *ks_tuple = NULL;
-
-    static char *kwlist[] = {"keytab", "keepold", NULL};
-    PyObject *keepold_obj = Py_False;
-    krb5_boolean keepold = FALSE;
+    PyObject *randkey_obj = Py_True;
+    krb5_boolean randkey = TRUE;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs,
                                      "s|O",
                                      kwlist,
                                      &keytab_str,
-                                     &keepold_obj))
+                                     &randkey_obj))
         return NULL;
 
-    if (!PyBool_Check(keepold_obj)) {
+    if (!PyBool_Check(randkey_obj)) {
         PyErr_SetString(PyExc_TypeError,
-                        "keepold must be True or False");
+                        "randkey must be True or False");
         return NULL;
     }
 
-    keepold = (keepold_obj == Py_True) ? TRUE : FALSE;
+    randkey = (randkey_obj == Py_True);
 
     if (keytab_str == NULL || *keytab_str == '\0') {
-        PyKAdminError_raise_error(1, "empty keytab");
+        PyErr_SetString(PyExc_ValueError, "empty keytab");
         return NULL;
     }
 
-    if (strchr(keytab_str, ':') != NULL)
-        keytab_str = strdup(keytab_str);
-    else if (asprintf(&keytab_str, "WRFILE:%s", keytab_str) < 0)
-        keytab_str = NULL;
-
-    if (keytab_str == NULL) {
-        PyKAdminError_raise_error(2, "could not construct keytab filename");
-        return NULL;
+    if (strchr(keytab_str, ':') == NULL) {
+        char *tmp;
+        if (asprintf(&tmp, "WRFILE:%s", keytab_str) < 0)
+            return PyErr_NoMemory();
+        keytab_str = tmp;
     }
 
-    code = krb5_kt_resolve(self->kadmin->context, keytab_str, &keytab);
-    if (code != 0) {
+    code = krb5_kt_resolve(self->kadmin->context,
+                           keytab_str,
+                           &keytab);
+    if (code) {
         PyKAdminError_raise_error(code,
-            "krb5_kt_resolve: could not construct keytab");
+            "krb5_kt_resolve failed");
         return NULL;
     }
 
-    code = kadm5_randkey_principal_3(
-        self->kadmin->server_handle, self->entry.principal,
-        keepold, n_ks_tuple, ks_tuple, &keys, &nkeys);
-    if (code != 0) {
-        PyKAdminError_raise_error(code, "kadm5_randkey_principal: could not fetch keys");
-        result = NULL;
-        return result;
-    }
+    if (randkey) {
 
-    code = kadm5_get_principal(
-        self->kadmin->server_handle, self->entry.principal,
-        &princ_rec, KADM5_PRINCIPAL_NORMAL_MASK);
-    if (code != 0) {
-        PyKAdminError_raise_error(code, "kadm5_get_principal: could retrieve principal");
-        result = NULL;
-        return result;
-    }
+        krb5_keyblock *keys = NULL;
+        int nkeys = 0;
+        kadm5_principal_ent_rec princ_rec;
 
-    for (i = 0; i < nkeys; i++) {
-        memset(&new_entry, 0, sizeof(new_entry));
-        new_entry.principal = self->entry.principal;
-        new_entry.key = keys[i];
-        new_entry.vno = princ_rec.kvno;
+        code = kadm5_randkey_principal_3(
+            self->kadmin->server_handle,
+            self->entry.principal,
+            FALSE,
+            0,
+            NULL,
+            &keys,
+            &nkeys);
 
-        code = krb5_kt_add_entry(self->kadmin->context, keytab, &new_entry);
-        if (code != 0) {
-            for (i = 0; i < nkeys; i++)
-                krb5_free_keyblock_contents(self->kadmin->context, &keys[i]);
-            free(keys);
-            kadm5_free_principal_ent(self->kadmin->server_handle, &princ_rec);
-            PyKAdminError_raise_error(code, "krb5_kt_add_entry: could not add key");
-            result = NULL;
-            return result;
+        if (code) {
+            PyKAdminError_raise_error(code,
+                "kadm5_randkey_principal failed");
+            return NULL;
         }
 
+        code = kadm5_get_principal(
+            self->kadmin->server_handle,
+            self->entry.principal,
+            &princ_rec,
+            KADM5_PRINCIPAL_NORMAL_MASK);
+
+        if (code) {
+            PyKAdminError_raise_error(code,
+                "kadm5_get_principal failed");
+            return NULL;
+        }
+
+        for (i = 0; i < nkeys; i++) {
+
+            krb5_keytab_entry entry;
+            memset(&entry, 0, sizeof(entry));
+
+            entry.principal = self->entry.principal;
+            entry.key = keys[i];
+            entry.vno = princ_rec.kvno;
+
+            code = krb5_kt_add_entry(
+                self->kadmin->context,
+                keytab,
+                &entry);
+
+            if (code) {
+                PyKAdminError_raise_error(code,
+                    "krb5_kt_add_entry failed");
+                return NULL;
+            }
+
+            krb5_free_keyblock_contents(
+                self->kadmin->context,
+                &keys[i]);
+        }
+
+        free(keys);
+        kadm5_free_principal_ent(
+            self->kadmin->server_handle,
+            &princ_rec);
+    }
+    else {
+
+        kadm5_principal_ent_rec princ_rec;
+
+        code = kadm5_get_principal(
+            self->kadmin->server_handle,
+            self->entry.principal,
+            &princ_rec,
+            KADM5_PRINCIPAL_NORMAL_MASK | KADM5_KEY_DATA);
+
+        if (code) {
+            PyKAdminError_raise_error(code,
+                "kadm5_get_principal failed");
+            return NULL;
+        }
+
+        for (i = 0; i < princ_rec.n_key_data; i++) {
+
+            krb5_keyblock keyblock;
+            krb5_keytab_entry entry;
+
+            memset(&keyblock, 0, sizeof(keyblock));
+            memset(&entry, 0, sizeof(entry));
+
+            code = krb5_dbe_decrypt_key_data(
+                self->kadmin->context,
+                NULL,
+                &princ_rec.key_data[i],
+                &keyblock,
+                NULL);
+
+            if (code) {
+                PyKAdminError_raise_error(code,
+                    "krb5_dbe_decrypt_key_data failed");
+                kadm5_free_principal_ent(
+                    self->kadmin->server_handle,
+                    &princ_rec);
+                return NULL;
+            }
+
+            entry.principal = self->entry.principal;
+            entry.key = keyblock;
+            entry.vno =
+                princ_rec.key_data[i].key_data_kvno;
+
+            code = krb5_kt_add_entry(
+                self->kadmin->context,
+                keytab,
+                &entry);
+
+            krb5_free_keyblock_contents(
+                self->kadmin->context,
+                &keyblock);
+
+            if (code) {
+                PyKAdminError_raise_error(code,
+                    "krb5_kt_add_entry failed");
+                kadm5_free_principal_ent(
+                    self->kadmin->server_handle,
+                    &princ_rec);
+                return NULL;
+            }
+        }
+
+        kadm5_free_principal_ent(
+            self->kadmin->server_handle,
+            &princ_rec);
     }
 
-    kadm5_free_principal_ent(self->kadmin->server_handle, &princ_rec);
-    for (i = 0; i < nkeys; i++)
-        krb5_free_keyblock_contents(self->kadmin->context, &keys[i]);
-    free(keys);
+    krb5_kt_close(self->kadmin->context, keytab);
 
-    code = krb5_kt_close(self->kadmin->context, keytab);
-    if (code != 0) {
-        PyKAdminError_raise_error(code, "krb5_kt_close: could not close keytab");
-        result = NULL;
-        return result;
-    }
-
-    Py_XINCREF(result);
-    return result;
+    Py_RETURN_TRUE;
 }
 
 
